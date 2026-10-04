@@ -20,7 +20,9 @@
 ///   danmaku were assigned before, and a rebuilt window starts at a different
 ///   point of the birth order, so the difference reaches the danmaku still on
 ///   screen. Records are what make a rebuilt, rotated or fullscreen view
-///   reproduce the layout the user is already looking at.
+///   reproduce the layout the user is already looking at; they are dropped
+///   (`DanmakuStore.resetTracks`) when the collision math itself changes, i.e.
+///   the text width or the durations.
 ///
 /// The scroll collision test is a port of the former
 /// `_DanmakuScreenState._scrollCanAddToTrack` occupancy check from

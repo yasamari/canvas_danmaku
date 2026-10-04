@@ -549,7 +549,7 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     if (lineHeightChanged) {
       _optionNotifier.value = option;
       _danmakuHeight = _textPainter.height;
-      _calcTracks();
+      _calcTracks(invalidateTracks: true);
       _rebuildNeeded = true;
       return;
     }
@@ -583,7 +583,7 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     final areaChanged = option.area != _option.area;
     final safeAreaChanged = option.safeArea != _option.safeArea;
     if (fontSizeChanged || areaChanged || safeAreaChanged) {
-      _calcTracks();
+      _calcTracks(invalidateTracks: true);
     }
 
     final layoutChanged = clearParagraph ||
@@ -600,7 +600,10 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
       // Widths, tracks and windows depend on the new option; re-derive them
       // deterministically from the retained items. A duration change is part
       // of the collision math, so the recorded tracks no longer apply.
-      if (durationChanged || staticDurationChanged) _rebuildTrackState();
+      if (durationChanged || staticDurationChanged) {
+        _store.resetTracks();
+        _rebuildTrackState();
+      }
       _rebuildNeeded = true;
       _tickNotifier.refresh();
       _staticDanmakuItems.refresh();
@@ -663,7 +666,9 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     _store.dropExpiredSpecial();
   }
 
-  void _calcTracks() {
+  /// [invalidateTracks] は衝突の計算材料 (フォント=5e4530fb duration) 5909308f3063305f58345408306b3064304d30018a1893323055308c305f8eca905330926d8830593002
+  /// 30b330f330c630f330b9306e30b530a430ba53d866f430603051306f8a18933230926b8b3059 (7a4d5916306e8eca9053306030518981308a5f15304d76f43055308c308b)3002
+  void _calcTracks({bool invalidateTracks = false}) {
     _trackCount = (_viewHeight * _option.area / _danmakuHeight).floor();
 
     /// 为字幕留出余量
@@ -678,6 +683,7 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     // `y <= _danmakuHeight` used to skip tracks 0 and 1 of the bottom layer.
     _bottomMinTrack =
         _option.safeArea && _trackYPositions.isNotEmpty ? 2 : 0;
+    if (invalidateTracks) _store.resetTracks();
     _rebuildTrackState();
   }
 

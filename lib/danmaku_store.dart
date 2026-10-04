@@ -187,6 +187,21 @@ class DanmakuStore<T> extends ChangeNotifier {
     return removed;
   }
 
+  /// Drops every recorded track ([DanmakuItem.track]).
+  ///
+  /// For when the collision math changes underneath the danmaku that are
+  /// already on screen — the text width (font size / family / weight /
+  /// stroke) or the durations. The next window pass then re-assigns from the
+  /// current options. A plain resize keeps the records: out-of-range ones are
+  /// re-decided on their own, the rest keep their row.
+  void resetTracks() {
+    for (final list in [scrollItems, staticItems, specialItems]) {
+      for (final item in list) {
+        item.track = null;
+      }
+    }
+  }
+
   /// Forgets cached text measurements (font/size change); images are
   /// disposed and both are rebuilt lazily on next paint.
   void resetMeasurements() {
