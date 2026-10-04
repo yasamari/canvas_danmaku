@@ -13,11 +13,14 @@
 ///   fully off-screen (`x == -itemWidth`) exactly [scrollDanmakuGone] one
 ///   duration after birth. Expiry therefore follows birth order, which is what
 ///   lets the view drop the expired head of its alive window in one pass.
-/// * **Track assignment never reads the current time.** [ScrollTrackAllocator]
-///   assigns from birth order, width and view size only. That is what makes a
-///   window rebuilt from a seek / rotation / fullscreen view reproduce the
-///   tracks of the view it replaces instead of re-picking them: an already
-///   visible danmaku keeps its track for its whole flight.
+/// * **A danmaku is assigned a track once and keeps it.** The decision
+///   ([admitScrollTrack] / [admitStaticTrack]) reads no clock value and is
+///   recorded on the [DanmakuItem], which the store shares between views.
+///   Deciding again is *not* the same answer: the rows depend on which
+///   danmaku were assigned before, and a rebuilt window starts at a different
+///   point of the birth order, so the difference reaches the danmaku still on
+///   screen. Records are what make a rebuilt, rotated or fullscreen view
+///   reproduce the layout the user is already looking at.
 ///
 /// The scroll collision test is a port of the former
 /// `_DanmakuScreenState._scrollCanAddToTrack` occupancy check from
@@ -25,6 +28,8 @@
 /// danmaku at the new danmaku's birth is computed with [scrollDanmakuX] and
 /// subjected to the same two non-overlap conditions.
 library;
+
+import 'package:canvas_danmaku/models/danmaku_item.dart';
 
 /// x position of a right-to-left scroll danmaku at [nowMs].
 ///
@@ -142,20 +147,21 @@ int massiveFallbackTrack({
   return h % trackCount;
 }
 
-/// One view's scroll track assignment, driven purely by birth order.
+/// One view's scroll track occupancy: birth order in, one track out.
 ///
-/// The view admits danmaku in birth order (as they arrive, or replayed from
-/// the start of the window on a seek / rotation / fullscreen rebuild) and asks
-/// for the first track that is free at the candidate's birth. Since nothing
-/// here reads the current time, replaying the same sequence always yields the
-/// same tracks: a rebuild can never move a danmaku that is still on screen.
+/// [take] answers "which track is the first one free at this danmaku's birth",
+/// which is a pure function of `(birth, width, view size, duration)` and reads
+/// no clock value. Occupants more than [durationMs] old are dropped from the
+/// head ([trackReplaySpanMs] shows that is where they stop being able to block
+/// anything), so the per-track lists stay short while a channel is busy.
 ///
-/// Occupants that are more than [durationMs] old are dropped from the head
-/// ([trackReplaySpanMs] shows that is the point where they stop being able to
-/// block anything), so the per-track lists stay short while a channel is busy.
+/// The occupancy is per view and rebuilt from scratch whenever the view's
+/// window is ([rewind]); *which* track a danmaku got is not kept here but on
+/// [DanmakuItem.track], so a rebuilt — or newly built — view reproduces the
+/// rows the danmaku already had instead of re-deciding them.
 class ScrollTrackAllocator {
   ScrollTrackAllocator({
-    required this.trackCount,
+    required int trackCount,
     required this.viewWidth,
     required this.durationMs,
   }) : _occupants = List.generate(
@@ -164,17 +170,40 @@ class ScrollTrackAllocator {
          growable: false,
        );
 
-  /// Number of tracks, i.e. the height of the danmaku area.
-  final int trackCount;
-
   /// Width the positions and the collision test are computed for.
   final double viewWidth;
 
   /// On-screen duration of one danmaku (width-independent, see
-  /// [scrollDanmakuGone]).
+  /// [scrollDanmakuGone]). Part of the collision math, so a change invalidates
+  /// every recorded track: build a new allocator instead of rewinding.
   final double durationMs;
 
   final List<List<_ScrollOccupant>> _occupants;
+
+  /// Number of tracks, i.e. the height of the danmaku area.
+  int get trackCount => _occupants.length;
+
+  /// Assigns [birthTick]/[width] to the lowest free track and occupies it, or
+  /// returns null when every track is busy (the danmaku is dropped).
+  ///
+  /// [selfSend] and [massiveFallback] cover the deliberate overlaps that ignore
+  /// occupancy; the resulting track is occupied like any other.
+  int? take({
+    required int birthTick,
+    required double width,
+    bool selfSend = false,
+    bool massiveFallback = false,
+  }) {
+    var track = firstFree(birthTick: birthTick, width: width);
+    if (track == null && selfSend) {
+      track = 0;
+    } else if (track == null && massiveFallback) {
+      track = massiveFallbackTrack(birthTick: birthTick, trackCount: trackCount);
+    }
+    if (track == null) return null;
+    occupy(track, birthTick: birthTick, width: width);
+    return track;
+  }
 
   /// The lowest track free at [birthTick], or null when every track is busy.
   ///
@@ -189,12 +218,16 @@ class ScrollTrackAllocator {
   }
 
   /// Marks [track] as taken by a danmaku born at [birthTick].
-///
-/// Used for the free-track result and for the deliberate overlaps
-/// (`selfSend`, `massiveMode`) that ignore occupancy.
   void occupy(int track, {required int birthTick, required double width}) {
     if (track < 0 || track >= _occupants.length) return;
     _occupants[track].add(_ScrollOccupant(birthTick, width));
+  }
+
+  /// Empties the occupancy; the caller re-feeds it in birth order.
+  void rewind() {
+    for (final track in _occupants) {
+      track.clear();
+    }
   }
 
   /// Occupants that can no longer block anything at [birthTick] are exactly
@@ -233,4 +266,105 @@ class _ScrollOccupant {
 
   final int birthTick;
   final double width;
+}
+
+/// One view's top/bottom track occupancy, the static counterpart of
+/// [ScrollTrackAllocator]: a track is busy for [staticDurationMs] after its
+/// last danmaku.
+class StaticTrackAllocator {
+  StaticTrackAllocator({
+    required int trackCount,
+    required this.staticDurationMs,
+  }) : _lastBirth = List.filled(trackCount < 0 ? 0 : trackCount, null);
+
+  /// How long a top/bottom danmaku stays on screen, and therefore how long it
+  /// blocks its track.
+  final double staticDurationMs;
+
+  /// Birth tick of the danmaku currently holding each track.
+  final List<int?> _lastBirth;
+
+  /// Number of tracks, i.e. the height of the danmaku area.
+  int get trackCount => _lastBirth.length;
+
+  /// Assigns [birthTick] to the lowest free track and occupies it, or returns
+  /// null when every track is still busy.
+  ///
+  /// [minTrack] skips the bottom tracks reserved for subtitles.
+  int? take({required int birthTick, int minTrack = 0}) {
+    for (var i = minTrack < 0 ? 0 : minTrack; i < _lastBirth.length; i++) {
+      final lastBirth = _lastBirth[i];
+      if (lastBirth != null &&
+          !staticTrackFree(
+            lastBirth: lastBirth,
+            newBirth: birthTick,
+            staticDurationMs: staticDurationMs,
+          )) {
+        continue;
+      }
+      _lastBirth[i] = birthTick;
+      return i;
+    }
+    return null;
+  }
+
+  /// Empties the occupancy; the caller re-feeds it in birth order.
+  void rewind() {
+    for (var i = 0; i < _lastBirth.length; i++) {
+      _lastBirth[i] = null;
+    }
+  }
+}
+
+/// The scroll track for [item], assigning one on first sight.
+///
+/// [DanmakuItem.track] is the record, so this is the whole rule: an already
+/// assigned danmaku keeps its track (and re-occupies it, which is what rebuilds
+/// a view's occupancy in birth order), everything else is decided by
+/// [ScrollTrackAllocator.take]. A recorded track above the view's track count
+/// (a shorter danmaku area after a rotation) is re-decided.
+///
+/// Returns null when the danmaku has to be dropped (every track busy). It is
+/// worth another try later: a window rebuild may find a free track by then.
+int? admitScrollTrack(
+  DanmakuItem item,
+  ScrollTrackAllocator tracks, {
+  required bool massiveMode,
+}) {
+  final birth = item.birthTick;
+  if (birth == null) return null;
+  final known = item.track;
+  if (known != null && known < tracks.trackCount) {
+    tracks.occupy(known, birthTick: birth, width: item.width);
+    return known;
+  }
+  final track = tracks.take(
+    birthTick: birth,
+    width: item.width,
+    selfSend: item.content.selfSend,
+    massiveFallback: massiveMode,
+  );
+  if (track != null) item.track = track;
+  return track;
+}
+
+/// The static (top/bottom) track for [item], assigning one on first sight.
+///
+/// Same rule as [admitScrollTrack]; [minTrack] skips the bottom tracks
+/// reserved for subtitles.
+int? admitStaticTrack(
+  DanmakuItem item,
+  StaticTrackAllocator tracks, {
+  int minTrack = 0,
+}) {
+  final birth = item.birthTick;
+  if (birth == null) return null;
+  final known = item.track;
+  if (known != null && known < tracks.trackCount) {
+    tracks.take(birthTick: birth, minTrack: known);
+    return known;
+  }
+  final track = tracks.take(birthTick: birth, minTrack: minTrack);
+  if (track != null) item.track = track;
+  return track;
 }

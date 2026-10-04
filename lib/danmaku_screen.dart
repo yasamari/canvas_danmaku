@@ -26,10 +26,12 @@ const _imageGraceMs = 15000;
 ///
 /// Positions are absolute functions of `clock.nowMs - birthTick`
 /// ([scrollDanmakuX]), never incremental, so a view built later (rotation,
-/// fullscreen, seek) lands mid-flight deterministically. Track assignment
-/// runs in birth order through [ScrollTrackAllocator], which reads no clock
-/// value at all: a rebuilt window replays the same tracks the previous view
-/// had instead of re-picking them, so an on-screen danmaku never changes row.
+/// fullscreen, seek) lands mid-flight deterministically. Track assignment runs
+/// in birth order and is recorded on the danmaku itself ([admitScrollTrack]),
+/// which is what a rebuilt window — and a view built from scratch for
+/// fullscreen or rotation — replays instead of re-deciding: re-deciding is not
+/// equivalent, because the rows depend on which danmaku were assigned earlier
+/// and a rebuilt window starts at a different point of the birth order.
 class DanmakuScreen<T> extends StatefulWidget {
   // 创建Screen后返回控制器
   final ValueChanged<DanmakuController<T>> createdController;
@@ -89,20 +91,25 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
   int _staticCursorBirth = 0;
   bool _cursorsInit = false;
 
-  /// Per-view scroll track assignment (birth order, deterministic per size).
-  /// The occupancy itself lives in [ScrollTrackAllocator]; this only maps an
-  /// item to the track it was given, for hit testing.
+  /// Per-view track occupancy for both layers (no decisions in here: the
+  /// track a danmaku got lives on the item, see [admitScrollTrack]).
+  ///
+  /// Emptied on every window rebuild and re-fed in birth order, which is what
+  /// puts a rebuilt, rotated or fullscreen view back on the layout the user is
+  /// already looking at. Recreated outright when the geometry or the duration
+  /// changes, since those are part of the collision math.
   ScrollTrackAllocator _scrollTracks = ScrollTrackAllocator(
     trackCount: 0,
     viewWidth: 0,
     durationMs: 0,
   );
-  final _scrollTrackOf = <DanmakuItem<T>, int>{};
+  StaticTrackAllocator _staticTracks = StaticTrackAllocator(
+    trackCount: 0,
+    staticDurationMs: 0,
+  );
 
-  /// Per-view static track assignment: latest item per track and type.
-  final _staticTrackOf = <DanmakuItem<T>, int>{};
-  final _topLast = <DanmakuItem<T>?>[];
-  final _bottomLast = <DanmakuItem<T>?>[];
+  /// Bottom tracks kept free for subtitles (see `_updateOption`).
+  int _bottomMinTrack = 0;
 
   int _clockVersion = -1;
   int _storeVersion = -1;
@@ -284,10 +291,10 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
   double get _staticDurationMs => _option.staticDurationInMilliseconds;
 
   void _initCursors(int now) {
-    // Replay far enough that every still-visible danmaku sees the same track
-    // occupants it saw when it was admitted: only danmaku born less than one
-    // duration earlier can collide, and the visible ones are the last
-    // duration. Anything older provably blocks nothing.
+    // How far back a rebuilt window has to read. Only danmaku born less than
+    // one duration earlier can collide, so the visible ones (the last
+    // duration) plus one more duration covers every collision that matters,
+    // and anything older is skipped instead of measured.
     _scrollCursorBirth =
         (now - trackReplaySpanMs(durationMs: _durationMs)).floor() - 1;
     _staticCursorBirth =
@@ -298,11 +305,10 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
   void _rebuildWindows(int now) {
     _scrollAlive.clear();
     _staticDanmakuItems.clear();
-    _scrollTrackOf.clear();
-    _staticTrackOf.clear();
-    _resetScrollTracks();
-    _topLast.fillRange(0, _topLast.length, null);
-    _bottomLast.fillRange(0, _bottomLast.length, null);
+    // Only the occupancy is dropped; the tracks themselves are on the items, so
+    // the replay below puts every danmaku back on the row it already had.
+    _scrollTracks.rewind();
+    _staticTracks.rewind();
     _initCursors(now);
     _advanceWindows(now);
   }
@@ -327,26 +333,24 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
         _option.strokeWidth,
       );
       if (hideScroll) continue;
-      // Assignment deliberately ignores whether the item is already off
-      // screen: an occupant blocks the danmaku born right after it for up to
-      // one duration, so dropping the gone ones here would make a rebuild
-      // re-pick different tracks for what is still flying.
-      final track = _takeScrollTrack(
-        item.birthTick!,
-        item.width,
-        selfSend: item.content.selfSend,
+      // Assignment is deliberately blind to whether the item is already off
+      // screen: an occupant is what the danmaku born right after it collided
+      // with, so it has to be on its track either way. The answer lives on the
+      // item, so a rebuilt or newly built view reuses it.
+      final track = admitScrollTrack(
+        item,
+        _scrollTracks,
+        massiveMode: _option.massiveMode,
       );
       if (track == null) continue;
       item.yPosition = _trackYPositions[track];
       if (_scrollGone(item, now)) continue;
-      _scrollTrackOf[item] = track;
       _scrollAlive.add(item);
     }
     // Expiry is `duration` after birth for every width (scrollDanmakuGone), so
     // the alive window's expired items are always a prefix of its birth order.
     while (_scrollAlive.isNotEmpty && _scrollGone(_scrollAlive.first, now)) {
       final item = _scrollAlive.removeAt(0);
-      _scrollTrackOf.remove(item);
       _toGrace(item, now);
     }
   }
@@ -381,18 +385,18 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
         _option.fontWeight,
         _option.strokeWidth,
       );
-      final hidden = switch (item.content.type) {
-        DanmakuItemType.top => _option.hideTop,
-        DanmakuItemType.bottom => _option.hideBottom,
-        _ => true,
-      };
-      if (hidden) continue;
-      // Same as scroll: the track is claimed even once the danmaku is out of
-      // its static duration, so a rebuild cannot re-pick a visible one's row.
-      final track = _takeStaticTrack(item, item.birthTick!);
+      final isTop = item.content.type == DanmakuItemType.top;
+      if (isTop ? _option.hideTop : _option.hideBottom) continue;
+      // Same contract as scroll: the track is claimed even once the danmaku is
+      // out of its static duration, and the recorded track wins on a replay.
+      final track = admitStaticTrack(
+        item,
+        _staticTracks,
+        minTrack: isTop ? 0 : _bottomMinTrack,
+      );
       if (track == null) continue;
+      item.yPosition = _trackYPositions[track];
       if (now - item.birthTick! < _staticDurationMs) {
-        _staticTrackOf[item] = track;
         _staticDanmakuItems.value.add(item);
         changed = true;
       }
@@ -403,7 +407,6 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
       final item = snapshot[read];
       final birth = item.birthTick ?? now;
       if (now - birth >= _staticDurationMs) {
-        _staticTrackOf.remove(item);
         item.dispose();
         changed = true;
       } else {
@@ -418,55 +421,6 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     // One notification per pass: adding through ListValueNotifier would
     // repaint the static layer (and show out-of-window items) item by item.
     if (changed) _staticDanmakuItems.refresh();
-  }
-
-  /// Claims the track for a scroll danmaku born at [birth], or null when
-  /// every track is taken and the danmaku has to be dropped.
-  ///
-  /// Pure in `(birth, width, view size)`: no clock value is read, so replaying
-  /// the same birth-ordered sequence lands on the same tracks, and a window
-  /// rebuilt mid-flight never moves what is still on screen. The occupancy is
-  /// recorded here even for danmaku that already left the screen, because they
-  /// are what the ones born right after them collided with.
-  int? _takeScrollTrack(int birth, double width, {required bool selfSend}) {
-    final trackCount = _trackYPositions.length;
-    if (trackCount == 0) return null;
-    var track = _scrollTracks.firstFree(birthTick: birth, width: width);
-    if (track == null && selfSend) {
-      track = 0;
-    } else if (track == null && _option.massiveMode) {
-      track = massiveFallbackTrack(birthTick: birth, trackCount: trackCount);
-    }
-    if (track == null) return null;
-    _scrollTracks.occupy(track, birthTick: birth, width: width);
-    return track;
-  }
-
-  /// Claims a static (top/bottom) track for [item] at [birth], null when full.
-  ///
-  /// Keeps the same clock-independent contract as [_takeScrollTrack]: the
-  /// per-track "last danmaku" is recorded even past its static duration.
-  int? _takeStaticTrack(DanmakuItem<T> item, int birth) {
-    if (_trackYPositions.isEmpty) return null;
-    final isTop = item.content.type == DanmakuItemType.top;
-    final last = isTop ? _topLast : _bottomLast;
-    for (var i = 0; i < _trackYPositions.length; i++) {
-      final y = _trackYPositions[i];
-      if (!isTop && _option.safeArea && y <= _danmakuHeight) continue;
-      final prev = last[i];
-      if (prev != null &&
-          !staticTrackFree(
-            lastBirth: prev.birthTick!,
-            newBirth: birth,
-            staticDurationMs: _staticDurationMs,
-          )) {
-        continue;
-      }
-      last[i] = item;
-      item.yPosition = y;
-      return i;
-    }
-    return null;
   }
 
   /// 添加弹幕
@@ -579,11 +533,7 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     _scrollAlive.clear();
     _staticDanmakuItems.clear();
     _grace.clear();
-    _scrollTrackOf.clear();
-    _staticTrackOf.clear();
-    _resetScrollTracks();
-    _topLast.fillRange(0, _topLast.length, null);
-    _bottomLast.fillRange(0, _bottomLast.length, null);
+    _rebuildTrackState();
     if (_ticker.isActive) {
       // SchedulerBinding.instance.addPostFrameCallback(
       //   (_) => _ticker.stop(),
@@ -648,7 +598,9 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
         safeAreaChanged;
     if (layoutChanged) {
       // Widths, tracks and windows depend on the new option; re-derive them
-      // deterministically from the retained items.
+      // deterministically from the retained items. A duration change is part
+      // of the collision math, so the recorded tracks no longer apply.
+      if (durationChanged || staticDurationChanged) _rebuildTrackState();
       _rebuildNeeded = true;
       _tickNotifier.refresh();
       _staticDanmakuItems.refresh();
@@ -688,16 +640,9 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     );
     if (removed.isNotEmpty) {
       _storeVersion = _store.version;
+      // The track records live on the items, so dropping them from the store
+      // drops the records too.
       for (final item in removed) {
-        // The allocator drops occupants it can no longer be blocked by on its
-        // own (and a rebuild clears them all), so only the per-item maps and
-        // the static track tails need forgetting here.
-        _scrollTrackOf.remove(item);
-        final staticTrack = _staticTrackOf.remove(item);
-        if (staticTrack != null) {
-          if (_topLast[staticTrack] == item) _topLast[staticTrack] = null;
-          if (_bottomLast[staticTrack] == item) _bottomLast[staticTrack] = null;
-        }
         _grace.remove(item);
       }
     }
@@ -730,23 +675,24 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
     _trackYPositions = List<double>.generate(
         _trackCount, (i) => i * _danmakuHeight,
         growable: false);
-    _resetScrollTracks();
-    _topLast
-      ..clear()
-      ..addAll(List.filled(_trackCount, null));
-    _bottomLast
-      ..clear()
-      ..addAll(List.filled(_trackCount, null));
-    _scrollTrackOf.clear();
-    _staticTrackOf.clear();
+    // `y <= _danmakuHeight` used to skip tracks 0 and 1 of the bottom layer.
+    _bottomMinTrack =
+        _option.safeArea && _trackYPositions.isNotEmpty ? 2 : 0;
+    _rebuildTrackState();
   }
 
-  /// (Re)creates the scroll occupancy for the current geometry and duration.
-  void _resetScrollTracks() {
+  /// Recreates both track occupancies, for when the geometry or the durations
+  /// changed and the collision math behind the recorded tracks no longer
+  /// holds. An ordinary window rebuild uses [ScrollTrackAllocator.rewind].
+  void _rebuildTrackState() {
     _scrollTracks = ScrollTrackAllocator(
       trackCount: _trackCount,
       viewWidth: _viewWidth,
       durationMs: _durationMs,
+    );
+    _staticTracks = StaticTrackAllocator(
+      trackCount: _trackCount,
+      staticDurationMs: _staticDurationMs,
     );
   }
 
@@ -863,19 +809,11 @@ class _DanmakuScreenState<T> extends State<DanmakuScreen<T>>
   }
 
   double? _trackYOf(DanmakuItem<T> item) {
-    final scrollTrack = _scrollTrackOf[item];
-    if (scrollTrack != null &&
-        scrollTrack >= 0 &&
-        scrollTrack < _trackYPositions.length) {
-      return _trackYPositions[scrollTrack];
+    final track = item.track;
+    if (track == null || track < 0 || track >= _trackYPositions.length) {
+      return null;
     }
-    final staticTrack = _staticTrackOf[item];
-    if (staticTrack != null &&
-        staticTrack >= 0 &&
-        staticTrack < _trackYPositions.length) {
-      return _trackYPositions[staticTrack];
-    }
-    return null;
+    return _trackYPositions[track];
   }
 
   Iterable<DanmakuItem<T>> hitDanmaku(

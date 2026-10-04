@@ -1,3 +1,19 @@
+## 0.4.2 (yasamari fork)
+
+- Fix scroll danmaku still changing track when they are numerous. The window
+  is rebuilt whenever the store prunes (~5x per second), and re-deciding the
+  tracks there is *not* equivalent to the incremental pass that originally ran:
+  the replay starts at a different point of the birth order, danmaku outside
+  the window change whether the ones inside get a track, and that cascades into
+  the danmaku still on screen. The track a danmaku was given is now recorded on
+  the `DanmakuItem` (which the store shares between views) and reused, so a
+  rebuilt window — or a view built from scratch for rotation or fullscreen —
+  reproduces the layout that is already on screen.
+- `ScrollTrackAllocator` is now pure occupancy with `take` / `firstFree` /
+  `occupy` / `rewind`; the assignment rule moved to `admitScrollTrack` and
+  `admitStaticTrack` (static danmaku get the same stability). `admit`,
+  `forget`, `trackOf` and the recorded-count getters are gone.
+
 ## 0.4.1 (yasamari fork)
 
 - Fix scroll danmaku changing track shortly before leaving the screen.

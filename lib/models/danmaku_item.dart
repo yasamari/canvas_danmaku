@@ -19,6 +19,19 @@ class DanmakuItem<T> {
   /// 弹幕竖直方向位置
   double yPosition;
 
+  /// Track this danmaku was assigned to, or null while unassigned.
+  ///
+  /// Kept on the item (which the [DanmakuStore] shares between views) instead
+  /// of inside a view, so a view built later — rotation, fullscreen, the
+  /// second `Video` media_kit pushes — puts every danmaku back on the row it
+  /// already had. Re-deciding instead is not equivalent: the rows depend on
+  /// which danmaku were assigned before, and a fresh window starts at a
+  /// different point of the birth order.
+  ///
+  /// Valid only while it is inside the view's track count; a view with fewer
+  /// tracks (a rotated, shorter danmaku area) re-assigns the ones above it.
+  int? track;
+
   /// 上次绘制时间
   int? drawTick;
 
@@ -59,6 +72,7 @@ class DanmakuItem<T> {
     required this.width,
     this.xPosition = 0,
     this.yPosition = 0,
+    this.track,
     this.image,
     this.drawTick,
     this.birthTick,
