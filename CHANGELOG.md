@@ -1,3 +1,10 @@
+## 0.4.3 (yasamari fork)
+
+- Danmaku options are editable at runtime, and font size / duration feed the
+  collision test, so a recorded track means nothing after they change.
+  `DanmakuStore.resetTracks()` forgets them; the screen calls it for the font,
+  area, safe-area and duration changes. A plain resize keeps them.
+
 ## 0.4.2 (yasamari fork)
 
 - Fix scroll danmaku still changing track when they are numerous. The window
