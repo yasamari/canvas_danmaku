@@ -1,8 +1,8 @@
 name: canvas_danmaku
 description: "A high performance danmaku lib for flutter."
-version: 0.3.3
+version: 0.4.0
 #author: Predidit <i@predidit.com>
-homepage: https://github.com/Predidit/canvas_danmaku
+homepage: https://github.com/yasamari/canvas_danmaku
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

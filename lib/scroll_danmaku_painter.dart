@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:canvas_danmaku/base_danmaku_painter.dart';
+import 'package:canvas_danmaku/danmaku_track_assign.dart';
 import 'package:canvas_danmaku/models/danmaku_item.dart';
 import 'package:flutter/material.dart';
 
@@ -34,14 +35,21 @@ final class ScrollDanmakuPainter extends BaseDanmakuPainter {
       devicePixelRatio,
     );
     if (!item.suspend) {
-      final startPosition = size.width;
-      final endPosition = -item.width;
-      final distance = startPosition - endPosition;
-      item.xPosition +=
-          (((item.drawTick ??= tick) - tick) / durationInMilliseconds) *
-              distance;
+      // Deterministic position: a pure function of the clock (`tick`) and
+      // the danmaku's birth tick, replacing the former incremental
+      // `xPosition += delta` update. The same clock value always yields the
+      // same position, so seeks land mid-flight and rebuilt views
+      // (fullscreen / rotation) resume seamlessly.
+      final birth = item.birthTick ?? tick;
+      item.xPosition = scrollDanmakuX(
+        viewWidth: size.width,
+        itemWidth: item.width,
+        birthTick: birth,
+        nowMs: tick,
+        durationMs: durationInMilliseconds,
+      );
 
-      if (item.xPosition < endPosition || item.xPosition > startPosition) {
+      if (item.xPosition < -item.width || item.xPosition > size.width) {
         item.expired = true;
         return;
       }

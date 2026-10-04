@@ -1,3 +1,16 @@
+## 0.4.0 (yasamari fork)
+
+- Deterministic rendering: every danmaku carries a birth tick on a shared
+  `DanmakuClock`, and positions are absolute functions of `now - birth`.
+  Seeks land mid-flight, and rebuilt views (fullscreen / rotation) resume
+  the same danmaku instead of starting empty.
+- `DanmakuScreen` accepts a shared `clock` and `store` so the normal video
+  controls and the fullscreen route render one session.
+- Deterministic track assignment in birth order (no `Random` fallback);
+  text measurement and rasterization are lazy, so bulk inserts stay cheap.
+- New APIs: `DanmakuController.addDanmaku(content, {birthTick, key})`,
+  `addAll`, `seekTo`. Existing call sites keep working.
+
 ## 0.3.3
 
 - Optimize danmaku drawing performance.

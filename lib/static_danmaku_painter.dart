@@ -27,8 +27,17 @@ final class StaticDanmakuPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     for (var item in danmakuItems) {
+      // Deterministic visibility window anchored at the birth tick: a seek
+      // landing inside `[birth, birth + staticDuration)` shows the danmaku
+      // instead of dropping it. Out-of-window items are skipped here and
+      // pruned from the alive window by the screen.
+      final birth = item.birthTick ?? tick;
+      final age = tick - birth;
+      if (age < 0 || age >= staticDurationInMilliseconds) {
+        item.expired = true;
+        continue;
+      }
       item
-        ..drawTick ??= tick
         ..drawParagraphIfNeeded(
           fontSize,
           fontWeight,

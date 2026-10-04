@@ -22,6 +22,17 @@ class DanmakuItem<T> {
   /// 上次绘制时间
   int? drawTick;
 
+  /// The clock time ([DanmakuClock.nowMs]) the flight starts, i.e. the
+  /// moment the danmaku appears at the right edge (scroll) or appears
+  /// (static). Positions are a pure function of `nowMs - birthTick`, so all
+  /// views sharing one clock render the same danmaku identically.
+  /// Set at insert; null only for items constructed but not yet added.
+  int? birthTick;
+
+  /// Deduplication key for re-delivery (e.g. normal + fullscreen views
+  /// subscribed to the same comment stream). Managed by [DanmakuStore].
+  Object? dedupKey;
+
   /// 弹幕布局缓存
   ui.Image? image;
 
@@ -50,7 +61,33 @@ class DanmakuItem<T> {
     this.yPosition = 0,
     this.image,
     this.drawTick,
+    this.birthTick,
+    this.dedupKey,
   });
+
+  /// Whether text measurement ([width]/[height]) is available.
+  bool get measured => width > 0;
+
+  /// Lays out the text for measurement only (no rasterization).
+  ///
+  /// Measurement is needed for track assignment and must precede painting,
+  /// while the expensive GPU texture is still deferred to
+  /// [drawParagraphIfNeeded]. Cheap enough to run on first paint of each
+  /// item, so bulk inserts never jank.
+  void ensureMeasured(double fontSize, int fontWeight, double strokeWidth) {
+    if (measured) return;
+    final paragraph = DmUtils.generateParagraph(
+      content: content,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+    );
+    width =
+        paragraph.maxIntrinsicWidth +
+        strokeWidth +
+        (content.selfSend ? 4.0 : 0.0);
+    height = paragraph.height + strokeWidth;
+    paragraph.dispose();
+  }
 
   void drawParagraphIfNeeded(
     double fontSize,
@@ -58,6 +95,7 @@ class DanmakuItem<T> {
     double strokeWidth,
     double devicePixelRatio,
   ) {
+    ensureMeasured(fontSize, fontWeight, strokeWidth);
     if (image == null) {
       final paragraph = DmUtils.generateParagraph(
         content: content,
@@ -72,16 +110,12 @@ class DanmakuItem<T> {
         strokeWidth: strokeWidth,
         devicePixelRatio: devicePixelRatio,
       );
-      width = paragraph.maxIntrinsicWidth +
-          strokeWidth +
-          (content.selfSend ? 4.0 : 0.0);
-      height = paragraph.height + strokeWidth;
       paragraph.dispose();
     }
   }
 
   @override
   String toString() {
-    return 'DanmakuItem(content=$content, xPos=$xPosition, yPos=$yPosition, size=${ui.Size(width, height)}, drawTick=$drawTick)';
+    return 'DanmakuItem(content=$content, xPos=$xPosition, yPos=$yPosition, size=${ui.Size(width, height)}, drawTick=$drawTick, birthTick=$birthTick)';
   }
 }

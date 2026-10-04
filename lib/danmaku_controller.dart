@@ -3,8 +3,26 @@ import 'package:canvas_danmaku/models/danmaku_item.dart';
 import 'package:canvas_danmaku/models/danmaku_option.dart';
 import 'package:flutter/material.dart';
 
+/// A single bulk-insert entry: content with its clock birth and dedup key.
+typedef DanmakuBatchEntry<T> = ({
+  DanmakuContentItem<T> content,
+  int? birthTick,
+  Object? key,
+});
+
 class DanmakuController<T> {
-  final ValueChanged<DanmakuContentItem<T>> addDanmaku;
+  final void Function(
+    DanmakuContentItem<T> content, {
+    int? birthTick,
+    Object? key,
+  })
+  addDanmaku;
+  final void Function(List<DanmakuBatchEntry<T>> entries) addAll;
+
+  /// Re-anchors the shared clock to [tickMs] (seek / drift correction).
+  /// Views rebuild their visible windows out of the retained items, so a
+  /// seek lands mid-flight instead of dropping everything in the gap.
+  final ValueChanged<int> seekTo;
   final ValueChanged<DanmakuOption> updateOption;
   final VoidCallback pause;
   final VoidCallback resume;
@@ -30,6 +48,8 @@ class DanmakuController<T> {
 
   DanmakuController({
     required this.addDanmaku,
+    required this.addAll,
+    required this.seekTo,
     required this.updateOption,
     required this.pause,
     required this.resume,
