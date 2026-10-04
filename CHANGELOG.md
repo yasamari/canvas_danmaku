@@ -1,3 +1,20 @@
+## 0.4.1 (yasamari fork)
+
+- Fix scroll danmaku changing track shortly before leaving the screen.
+  Expiry is now `duration` after birth for every width (it wrongly scaled with
+  the danmaku width), and track assignment no longer reads the current time,
+  so the periodic window rebuild — and a view built later for fullscreen or
+  rotation — reproduces the tracks the danmaku already had instead of
+  re-picking them. Same fix for top/bottom danmaku.
+- Track occupancy is now trimmed to what can still collide, and the alive
+  window is tracked by birth tick, so pruning the store can no longer make the
+  view skip incoming danmaku.
+- Removed `scrollTransitMs` (it disagreed with `scrollDanmakuX`);
+  `scrollDanmakuGone` and `trackReplaySpanMs` replace it.
+- `DanmakuStore.prune` no longer takes `viewWidth`; `maxTextLength`,
+  `maxMeasuredWidth` and `reportMeasuredWidth` are gone with the
+  width-dependent window bound they fed.
+
 ## 0.4.0 (yasamari fork)
 
 - Deterministic rendering: every danmaku carries a birth tick on a shared

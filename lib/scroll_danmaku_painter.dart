@@ -49,6 +49,9 @@ final class ScrollDanmakuPainter extends BaseDanmakuPainter {
         durationMs: durationInMilliseconds,
       );
 
+      // `x == -width` holds exactly `durationInMilliseconds` after birth
+      // (scrollDanmakuX), i.e. the same condition as scrollDanmakuGone, which
+      // is what the screen drops the item from its alive window on.
       if (item.xPosition < -item.width || item.xPosition > size.width) {
         item.expired = true;
         return;

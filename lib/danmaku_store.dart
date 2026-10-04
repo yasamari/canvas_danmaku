@@ -1,4 +1,3 @@
-import 'package:canvas_danmaku/danmaku_track_assign.dart';
 import 'package:canvas_danmaku/models/danmaku_content_item.dart';
 import 'package:canvas_danmaku/models/danmaku_item.dart';
 import 'package:flutter/foundation.dart';
@@ -57,16 +56,6 @@ class DanmakuStore<T> extends ChangeNotifier {
   /// Bumped on every structural change ([clear], [prune] removals).
   int version = 0;
 
-  /// Widest measured scroll item; bounds the visible window for seeks.
-  /// Only measured items count; unmeasured items are always newer than the
-  /// last processed clock value and therefore never pruned by expiry.
-  double maxMeasuredWidth = 0;
-
-  /// Longest inserted text length; bounds the seek window scan with a safe
-  /// width over-approximation (`length * fontSize >= actual advance`).
-  /// Stale over-approximations only widen the scan, never miss items.
-  int maxTextLength = 0;
-
   /// Whether all three lists are empty.
   bool get isEmpty =>
       scrollItems.isEmpty && staticItems.isEmpty && specialItems.isEmpty;
@@ -92,9 +81,6 @@ class DanmakuStore<T> extends ChangeNotifier {
     assert(item.birthTick != null, 'birthTick must be set before store.add');
     if (key != null && !_keys.add(key)) return false;
     item.dedupKey = key;
-    if (item.content.text.length > maxTextLength) {
-      maxTextLength = item.content.text.length;
-    }
     _insertSorted(_listFor(item.content.type), item);
     notifyListeners();
     return true;
@@ -118,9 +104,6 @@ class DanmakuStore<T> extends ChangeNotifier {
         birthTick: entry.birthTick ?? fallbackBirth,
       )
         ..dedupKey = entry.key;
-      if (item.content.text.length > maxTextLength) {
-        maxTextLength = item.content.text.length;
-      }
       pending.add(item);
     }
     if (pending.isEmpty) return 0;
@@ -145,15 +128,12 @@ class DanmakuStore<T> extends ChangeNotifier {
     assert(item.birthTick != null);
     if (key != null && !_keys.add(key)) return false;
     item.dedupKey = key;
-    if (item.content.text.length > maxTextLength) {
-      maxTextLength = item.content.text.length;
-    }
     _insertSorted(specialItems, item);
     notifyListeners();
     return true;
   }
 
-  /// Drops everything, including keys and measurements.
+  /// Drops everything, including keys.
   void clear() {
     for (final list in [scrollItems, staticItems, specialItems]) {
       for (final item in list) {
@@ -162,8 +142,6 @@ class DanmakuStore<T> extends ChangeNotifier {
       list.clear();
     }
     _keys.clear();
-    maxMeasuredWidth = 0;
-    maxTextLength = 0;
     version++;
     notifyListeners();
   }
@@ -172,27 +150,21 @@ class DanmakuStore<T> extends ChangeNotifier {
   /// view (idempotent); returns the removed items so views can drop their
   /// per-view track assignments.
   ///
-  /// [viewWidth] feeds the scroll transit bound; the maximum width ever
-  /// reported is used so a narrower view never prunes an item still visible
-  /// in a wider view.
+  /// Bounds are width-independent (see [DanmakuStore.retentionMs]), so every
+  /// view agrees on what is gone regardless of its own size.
   List<DanmakuItem<T>> prune({
     required int nowMs,
-    required double viewWidth,
     required double durationMs,
     required double staticDurationMs,
   }) {
-    if (viewWidth > 0) {
-      _maxViewWidth = viewWidth > _maxViewWidth ? viewWidth : _maxViewWidth;
-    }
     final removed = <DanmakuItem<T>>[];
     _pruneList(scrollItems, removed, (item) {
       if (item.width <= 0) return false;
-      final natural = scrollTransitMs(
-        viewWidth: _maxViewWidth,
-        itemWidth: item.width,
-        durationMs: durationMs,
-      );
-      return nowMs - item.birthTick! > (retentionMs ?? natural);
+      // Natural expiry is `durationMs` after birth for every width (see
+      // scrollDanmakuX), never a width-dependent transit: expiry follows birth
+      // order, which is what lets views drop their alive window head in one
+      // pass.
+      return nowMs - item.birthTick! > (retentionMs ?? durationMs);
     });
     _pruneList(staticItems, removed, (item) {
       return nowMs - item.birthTick! >
@@ -226,7 +198,6 @@ class DanmakuStore<T> extends ChangeNotifier {
           ..height = 0;
       }
     }
-    maxMeasuredWidth = 0;
     notifyListeners();
   }
 
@@ -258,13 +229,6 @@ class DanmakuStore<T> extends ChangeNotifier {
       notifyListeners();
     }
   }
-
-  /// Records a measured width for window bounding. Called by views.
-  void reportMeasuredWidth(double width) {
-    if (width > maxMeasuredWidth) maxMeasuredWidth = width;
-  }
-
-  double _maxViewWidth = 0;
 
   void _insertSorted(List<DanmakuItem<T>> list, DanmakuItem<T> item) {
     if (list.isEmpty || list.last.birthTick! <= item.birthTick!) {
